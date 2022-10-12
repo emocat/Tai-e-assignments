@@ -22,6 +22,7 @@
 
 package pascal.taie.analysis.dataflow.analysis;
 
+import org.apache.logging.log4j.core.appender.SmtpAppender;
 import pascal.taie.analysis.MethodAnalysis;
 import pascal.taie.analysis.dataflow.analysis.constprop.CPFact;
 import pascal.taie.analysis.dataflow.analysis.constprop.ConstantPropagation;
@@ -45,9 +46,7 @@ import pascal.taie.ir.stmt.If;
 import pascal.taie.ir.stmt.Stmt;
 import pascal.taie.ir.stmt.SwitchStmt;
 
-import java.util.Comparator;
-import java.util.Set;
-import java.util.TreeSet;
+import java.util.*;
 
 public class DeadCodeDetection extends MethodAnalysis {
 
@@ -71,6 +70,76 @@ public class DeadCodeDetection extends MethodAnalysis {
         Set<Stmt> deadCode = new TreeSet<>(Comparator.comparing(Stmt::getIndex));
         // TODO - finish me
         // Your task is to recognize dead code in ir and add it to deadCode
+
+        Set<Stmt> notVisit = new HashSet<>(cfg.getNodes());
+
+        Queue<Stmt> worklist = new LinkedList<>();
+        worklist.add(cfg.getEntry());
+
+        while (!worklist.isEmpty()) {
+            Stmt stmt = worklist.poll();
+
+            if (cfg.isExit(stmt)) {
+                notVisit.remove(stmt);
+                continue;
+            }
+
+            // remove unreachable code
+            if (notVisit.contains(stmt))
+                notVisit.remove(stmt);
+            else
+                continue;
+
+            // unreachable branch
+            if (stmt instanceof If ifStmt) {
+                Value res = ConstantPropagation.evaluate(ifStmt.getCondition(), constants.getInFact(ifStmt));
+                if (res.isConstant()) {
+                    for (Edge<Stmt> edge : cfg.getOutEdgesOf(ifStmt)) {
+                        if (edge.getKind() == Edge.Kind.IF_TRUE && res.getConstant() == 1) {
+                            worklist.add(edge.getTarget());
+                        }
+                        if (edge.getKind() == Edge.Kind.IF_FALSE && res.getConstant() == 0) {
+                            worklist.add(edge.getTarget());
+                        }
+                    }
+                }
+                else {
+                    worklist.addAll(cfg.getSuccsOf(stmt));
+                }
+            }
+            else if (stmt instanceof SwitchStmt switchStmt) {
+                Value res = ConstantPropagation.evaluate(switchStmt.getVar(), constants.getInFact(switchStmt));
+                if (res.isConstant()) {
+                    if (switchStmt.getCaseValues().contains(res.getConstant())) {
+                        for (Edge<Stmt> edge : cfg.getOutEdgesOf(switchStmt)) {
+                            if (edge.getKind() == Edge.Kind.SWITCH_CASE && edge.getCaseValue() == res.getConstant()) {
+                                worklist.add(edge.getTarget());
+                            }
+                        }
+                    }
+                    else {
+                        worklist.add(switchStmt.getDefaultTarget());
+                    }
+                }
+                else {
+                    worklist.addAll(cfg.getSuccsOf(stmt));
+                }
+            }
+            else {
+                worklist.addAll(cfg.getSuccsOf(stmt));
+            }
+
+            if (stmt instanceof AssignStmt assignStmt && hasNoSideEffect(assignStmt.getRValue()) && assignStmt.getLValue() instanceof Var lVar) {
+                if (! liveVars.getOutFact(stmt).contains(lVar)) {
+                    deadCode.add(stmt);
+                }
+            }
+        }
+
+        deadCode.addAll(notVisit);
+        deadCode.remove(cfg.getEntry());
+        deadCode.remove(cfg.getExit());
+
         return deadCode;
     }
 
